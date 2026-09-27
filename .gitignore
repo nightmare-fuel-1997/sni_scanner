@@ -1,0 +1,6 @@
+# Build output and runtime state (never commit run data or local config).
+bin/
+runs/
+*.log
+*.exe
+.env

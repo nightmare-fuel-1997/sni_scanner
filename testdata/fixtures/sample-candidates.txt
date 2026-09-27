@@ -1,0 +1,11 @@
+# Sample candidate list — SYNTHETIC demo/CI data only (no real-world domains).
+# Format: rank,domain[,host:port]
+# host:port is only used by the bundled local fixtures and private deployments;
+# omit it for real scans (the scanner then dials domain:443).
+1,edge-native-demo.tld
+2,legacy-tls-demo.tld
+3,shield-challenge-demo.tld
+4,bank-login-demo.tld,127.0.0.1:1
+# For real runs, point --list-file at a downloaded Tranco/Umbrella export, e.g.
+#   5,shop.example.ir
+#   6,news.example.ir,203.0.113.20:443

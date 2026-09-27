@@ -1,0 +1,6 @@
+# Normalise line endings so the Go sources are LF everywhere (Windows checkouts
+# still produce working files, but the repository stays clean).
+* text=auto eol=lf
+*.exe binary
+*.png binary
+*.jpg binary

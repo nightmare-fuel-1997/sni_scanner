@@ -1,0 +1,35 @@
+{
+  "edge-native-demo.tld": {
+    "domain": "edge-native-demo.tld",
+    "expect_pass": true,
+    "expect_description": "clean TLS 1.3 target advertising h2 + http/1.1 and serving 200 OK"
+  },
+  "legacy-tls-demo.tld": {
+    "domain": "legacy-tls-demo.tld",
+    "expect_pass": false,
+    "expect_gate": "G1",
+    "expect_reason": "tls_version",
+    "expect_description": "TLS 1.2-only endpoint (must fail G1)"
+  },
+  "shield-challenge-demo.tld": {
+    "domain": "shield-challenge-demo.tld",
+    "expect_pass": false,
+    "expect_gate": "G4",
+    "expect_reason": "challenge",
+    "expect_description": "edge-protected endpoint returning a JS challenge (must fail G4)"
+  },
+  "bank-login-demo.tld": {
+    "domain": "bank-login-demo.tld",
+    "expect_pass": false,
+    "expect_gate": "G4",
+    "expect_reason": "login",
+    "expect_description": "credential login page (must fail G4)"
+  },
+  "self-signed-demo.tld": {
+    "domain": "self-signed-demo.tld",
+    "expect_pass": false,
+    "expect_gate": "G3",
+    "expect_reason": "cert_selfsigned",
+    "expect_description": "self-signed certificate (must fail G3) — used by the unit test, not the list file"
+  }
+}
