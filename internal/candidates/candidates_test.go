@@ -110,3 +110,36 @@ func TestFilterByASNRequiresASN(t *testing.T) {
 		t.Fatal("expected error when ASN is empty")
 	}
 }
+
+func TestFilterByASNTransientFailureSkips(t *testing.T) {
+	// Reproduces: sni-scanner: ASN filter failed: Get
+	// "https://stat.ripe.net/...?resource=81.198.164.193": context deadline
+	// exceeded — a single transient RIPE failure must not abort the whole scan.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("resource")
+		if q == "81.198.164.193" {
+			http.Error(w, "transient", http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"asn":["AS211273"],"prefix":"2.0.0.0/24"}}`))
+	}))
+	defer srv.Close()
+
+	f := NewASNFilter()
+	f.BaseURL = srv.URL
+	f.Interval = 0
+	f.Now = func() time.Time { return time.Unix(0, 0) }
+
+	cands := []Candidate{
+		{Domain: "fail.example.lv", ConnectAddr: "81.198.164.193:443"},
+		{Domain: "ok.example.lv", ConnectAddr: "45.38.41.32:443"},
+	}
+	kept, _, err := FilterByASN(context.Background(), f, cands, "AS211273")
+	if err != nil {
+		t.Fatalf("transient failure should be skipped, got error: %v", err)
+	}
+	if len(kept) != 1 || kept[0].Domain != "ok.example.lv" {
+		t.Fatalf("expected only ok.example.lv kept, got %+v", kept)
+	}
+}

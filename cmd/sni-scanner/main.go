@@ -151,7 +151,11 @@ func cmdScan(cfg *config.Config) int {
 			fmt.Fprintln(os.Stderr, "sni-scanner: --asn-only requires a detected ASN; geo lookup failed")
 			return 1
 		}
-		filtered, removed, err := candidates.FilterByASN(ctx, candidates.NewASNFilter(), cands, geoRes.ASN)
+		asnFilter := candidates.NewASNFilter()
+		if cfg.Timeout > asnFilter.HTTPClient.Timeout {
+			asnFilter.HTTPClient.Timeout = cfg.Timeout
+		}
+		filtered, removed, err := candidates.FilterByASN(ctx, asnFilter, cands, geoRes.ASN)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "sni-scanner: ASN filter failed: %v\n", err)
 			return 1

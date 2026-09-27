@@ -154,7 +154,7 @@ func NewASNFilter() *ASNFilter {
 	return &ASNFilter{
 		BaseURL:    DefaultASNURL,
 		Interval:   time.Second,
-		HTTPClient: &http.Client{Timeout: 5 * time.Second},
+		HTTPClient: &http.Client{Timeout: 15 * time.Second},
 		Now:        time.Now,
 	}
 }
@@ -167,34 +167,58 @@ type networkInfo struct {
 }
 
 // SameASN reports whether ip is announced by asn.
+// Transient network errors and rate-limit/server errors (429/5xx) are retried
+// up to 3 times so a single slow RIPE response does not abort the whole scan.
 func (f *ASNFilter) SameASN(ctx context.Context, asn, ip string) (bool, error) {
-	if err := f.wait(ctx); err != nil {
-		return false, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, f.BaseURL+"?resource="+url.QueryEscape(ip), nil)
-	if err != nil {
-		return false, err
-	}
-	req.Header.Set("User-Agent", "sni-scanner/1.0 (asn filter)")
-	resp, err := f.HTTPClient.Do(req)
-	if err != nil {
-		return false, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("ripe stat returned status %d", resp.StatusCode)
-	}
-	var info networkInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return false, err
-	}
-	want := strings.TrimSpace(asn)
-	for _, a := range info.Data.ASN {
-		if strings.EqualFold(strings.TrimSpace(a), want) {
-			return true, nil
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-time.After(time.Duration(attempt) * 500 * time.Millisecond):
+			case <-ctx.Done():
+				return false, ctx.Err()
+			}
 		}
+		if err := f.wait(ctx); err != nil {
+			return false, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, f.BaseURL+"?resource="+url.QueryEscape(ip), nil)
+		if err != nil {
+			return false, err
+		}
+		req.Header.Set("User-Agent", "sni-scanner/1.0 (asn filter)")
+		resp, err := f.HTTPClient.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return false, err
+			}
+			lastErr = err
+			continue
+		}
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			lastErr = fmt.Errorf("ripe stat returned status %d", resp.StatusCode)
+			resp.Body.Close()
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return false, fmt.Errorf("ripe stat returned status %d", resp.StatusCode)
+		}
+		var info networkInfo
+		err = json.NewDecoder(resp.Body).Decode(&info)
+		resp.Body.Close()
+		if err != nil {
+			return false, err
+		}
+		want := strings.TrimSpace(asn)
+		for _, a := range info.Data.ASN {
+			if strings.EqualFold(strings.TrimSpace(a), want) {
+				return true, nil
+			}
+		}
+		return false, nil
 	}
-	return false, nil
+	return false, lastErr
 }
 
 func (f *ASNFilter) wait(ctx context.Context) error {
@@ -222,6 +246,8 @@ const MaxASNFilterCandidates = 100
 
 // FilterByASN keeps candidates whose resolved IP is announced by asn.
 // It is deliberately capped and never performs port scanning of neighbours.
+// A single transient RIPE/DNS failure skips that candidate instead of aborting
+// the whole scan; only a total outage (every lookup failed) returns an error.
 func FilterByASN(ctx context.Context, f *ASNFilter, cands []Candidate, asn string) ([]Candidate, int, error) {
 	if asn == "" {
 		return nil, 0, fmt.Errorf("--asn-only requires a detected ASN; geo lookup failed")
@@ -231,7 +257,13 @@ func FilterByASN(ctx context.Context, f *ASNFilter, cands []Candidate, asn strin
 		limit = MaxASNFilterCandidates
 	}
 	var kept []Candidate
+	skipped := 0
+	consecutive := 0
+	var lastErr error
 	for _, c := range cands[:limit] {
+		if ctx.Err() != nil {
+			return nil, 0, ctx.Err()
+		}
 		host, _, err := net.SplitHostPort(c.ConnectAddr)
 		if err != nil {
 			host = c.Domain
@@ -240,17 +272,37 @@ func FilterByASN(ctx context.Context, f *ASNFilter, cands []Candidate, asn strin
 		if net.ParseIP(host) == nil {
 			ips, err := net.DefaultResolver.LookupHost(ctx, host)
 			if err != nil || len(ips) == 0 {
+				skipped++
+				consecutive++
+				if len(kept) == 0 && consecutive >= 5 && limit > 5 {
+					break
+				}
 				continue
 			}
 			ip = ips[0]
 		}
 		same, err := f.SameASN(ctx, asn, ip)
 		if err != nil {
-			return nil, 0, err
+			skipped++
+			consecutive++
+			lastErr = err
+			if len(kept) == 0 && consecutive >= 5 && limit > 5 {
+				break
+			}
+			continue
 		}
+		consecutive = 0
 		if same {
 			kept = append(kept, c)
 		}
+	}
+	if len(kept) == 0 && skipped == limit && limit > 0 {
+		return nil, 0, fmt.Errorf("ASN lookup failed for all %d candidate(s) (last: %v) — RIPE Stat %s unreachable or timed out; retry without --asn-only or check egress to stat.ripe.net (slow links may need --timeout 20s)", limit, lastErr, f.BaseURL)
+	}
+	if len(kept) == 0 && skipped > 0 && len(kept)+skipped >= 5 && limit > 5 {
+		// Fast-fail path: provider looks down (5+ consecutive failures, no
+		// success yet) — don't burn through all 100 candidates.
+		return nil, 0, fmt.Errorf("ASN lookup failed for %d candidate(s) in a row (last: %v) — RIPE Stat %s unreachable or timed out; retry without --asn-only or check egress to stat.ripe.net (slow links may need --timeout 20s)", skipped, lastErr, f.BaseURL)
 	}
 	return kept, len(cands) - len(kept), nil
 }
